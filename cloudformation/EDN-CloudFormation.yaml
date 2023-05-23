@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: <sua descrição da pilha aqui>
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+    Metadata:
+      Comment: Virtual Private Cloud (VPC) para isolar os recursos da AWS.
+
+  # Subnet Pública
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+    Metadata:
+      Comment: Subnet pública para instâncias EC2 e recursos de rede.
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Metadata:
+      Comment: Gateway de Internet para permitir comunicação com a Internet.
+
+  # Anexo do Internet Gateway à VPC
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+    Metadata:
+      Comment: Anexo do Internet Gateway à VPC para conectividade com a Internet.
+
+  # Tabela de Rotas
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+    Metadata:
+      Comment: Tabela de rotas para roteamento de tráfego na VPC.
+
+  # Associação da Subnet à Tabela de Rotas
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+    Metadata:
+      Comment: Associação da subnet à tabela de rotas para roteamento adequado.
+
+  # Rota para acesso à Internet
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+    Metadata:
+      Comment: Rota para permitir acesso à Internet a partir da VPC.
+
+  # Security Group
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group para permitir tráfego na instância EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+    Metadata:
+      Comment: Security Group para controle de tráfego de rede.
+
+  # Instância EC2
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c94855ba95c71c99
+      InstanceType: t2.micro
+      KeyName: terraform_aws_key
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      SubnetId: !Ref PublicSubnet
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          echo "Starting instance..."
+          
+          # Install CloudWatch Agent
+          curl https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm -O
+          rpm -U ./amazon-cloudwatch-agent.rpm
+          
+          # Configure CloudWatch Agent
+          cat << EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+          {
+            "metrics": {
+              "append_dimensions": {
+                "InstanceId": "\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+              },
+              "metrics_collected": {
+                "cpu": {
+                  "measurement": [
+                    "cpu_usage_idle",
+                    "cpu_usage_iowait"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "totalcpu": false
+                },
+                "disk": {
+                  "measurement": [
+                    "used_percent"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "resources": [
+                    "*"
+                  ]
+                },
+                "diskio": {
+                  "measurement": [
+                    "io_time"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "resources": [
+                    "*"
+                  ]
+                },
+                "mem": {
+                  "measurement": [
+                    "mem_used_percent"
+                  ],
+                  "metrics_collection_interval": 60
+                },
+                "swap": {
+                  "measurement": [
+                    "swap_used_percent"
+                  ],
+                  "metrics_collection_interval": 60
+                }
+              }
+            }
+          }
+          EOF
+          
+          # Start CloudWatch Agent
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s      
+    Metadata:
+      Comment: Instância EC2 para hospedar o site estático.
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet
+    Metadata:
+      Comment: Auto Scaling Group para ajustar a capacidade da instância EC2 de acordo com a demanda.
+
+  # Launch Configuration
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: ami-0c94855ba95c71c99
+      InstanceType: t2.micro
+      SecurityGroups:
+        - !Ref SecurityGroup
+    Metadata:
+      Comment: Launch Configuration para configurar as instâncias EC2 no Auto Scaling Group.
+
+  # Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      AvailabilityZones:
+        - Fn::GetAZs: !Ref 'AWS::Region'
+      Listeners:
+        - LoadBalancerPort: 80
+          InstancePort: 80
+          Protocol: HTTP
+      HealthCheck:
+        Target: HTTP:80/
+        HealthyThreshold: 2
+        UnhealthyThreshold: 2
+        Interval: 30
+        Timeout: 5
+      Instances:
+        - !Ref EC2Instance
+    Metadata:
+      Comment: Load Balancer para distribuir o tráfego entre as instâncias EC2.
+
+  # Bucket S3
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      WebsiteConfiguration:
+        IndexDocument: index.html
+    Metadata:
+      Comment: Bucket S3 para hospedar os arquivos estáticos do site.
+
+  # Distribuição CloudFront
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt S3Bucket.DomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+    Metadata:
+      Comment: Distribuição CloudFront para acelerar a entrega de conteúdo estático.
+
+  # CloudWatch Alarm
+  EC2CPUUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarme para monitorar a utilização da CPU na instância EC2
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+    Metadata:
+      Comment: Alarme CloudWatch para monitorar a utilização da CPU na instância EC2.
+
+  # CloudWatch Dashboard
+  CloudWatchDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: MyDashboard
+      DashboardBody: >
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "InstanceId", "!Ref EC2Instance" ]
+                ],
+                "region": "!Ref 'AWS::Region'",
+                "period": 300,
+                "stat": "Average"
+              }
+            }
+          ]
+        }
+    Metadata:
+      Comment: Painel CloudWatch para visualizar métricas em tempo real.
+
+Outputs:
+  LoadBalancerURL:
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+    Description: URL do balanceador de carga.
+  S3BucketURL:
+    Value: !Sub "http://${S3Bucket}.s3-website.${AWS::Region}.amazonaws.com"
+    Description: URL do bucket S3 para o site estático.
