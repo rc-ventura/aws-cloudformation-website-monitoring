@@ -1,4 +1,3 @@
-Certamente! Aqui está o README atualizado com as marcações Markdown e a descrição dos recursos e serviços da AWS utilizados:
 
 # AWS CloudFormation - Monitoramento de Site com AWS CloudWatch
 
@@ -89,4 +88,3 @@ Este projeto está licenciado sob a [MIT License](LICENSE).
 
 ---
 
-Este README é apenas um exemplo e pode ser personalizado de acordo com as necessidades e especificidades do seu projeto.
